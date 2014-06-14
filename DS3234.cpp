@@ -26,7 +26,9 @@
 // 0 if time valid, 1 if osc stopped, 2 if DOW doesn't match, 3 if both
 uint8_t DS3234::init (uint8_t sck, uint8_t miso, uint8_t mosi, uint8_t ss)
 {
-	uint8_t errs = 0;
+	uint8_t errs;
+
+	errs = 0;
 
 	// init SPI pin values
 	_sck_pin = sck;
@@ -41,17 +43,17 @@ uint8_t DS3234::init (uint8_t sck, uint8_t miso, uint8_t mosi, uint8_t ss)
 	pinMode (_ss_pin, OUTPUT);
 
 	// check "oscillator has been stopped" flag
-	errs |= ( (_command (0x0F, 0x00) & 0b10000000) ? 1 : 0);
+	errs |= ((_command (0x0F, 0x00) & 0b10000000) ? 1 : 0);
 
 	_read_raw (); // read RTC
 
-	_dow = _bcd2dec (* (_buffer + 3) % 0b00000111); // get calculated DOW
+	_dow = _bcd2dec (*(_buffer + 3) % 0b00000111); // get calculated DOW
 
 	// check to see if stored DOW matches calculated DOW
-	errs |= ( (_dow == _get_dow (
-			_bcd2dec (* (_buffer + 5) & 0b00011111), // month
-			_bcd2dec (* (_buffer + 4) & 0b00111111), // date
-			_bcd2dec (* (_buffer + 6)) + ( (* (_buffer + 5) & 0x80) ? 2000 : 1900) // year
+	errs |= ((_dow == _get_dow (
+			_bcd2dec (*(_buffer + 5) & 0b00011111), // month
+			_bcd2dec (*(_buffer + 4) & 0b00111111), // date
+			_bcd2dec (*(_buffer + 6)) + ((*(_buffer + 5) & 0x80) ? 2000 : 1900) // year
 		)
 	) ? 0 : 2);
 
@@ -75,13 +77,13 @@ uint8_t DS3234::getTime (uint8_t *h, uint8_t *m, uint8_t *s, uint8_t *mn, uint8_
 uint8_t DS3234::readTime (uint8_t *h, uint8_t *m, uint8_t *s, uint8_t *mn, uint8_t *dy, uint16_t *yr)
 {
 	_read_raw (); // read RTC into buffer
-	*s = _bcd2dec (* (_buffer + 0) & 0b01111111); // get seconds
-	*m = _bcd2dec (* (_buffer + 1) & 0b01111111); // get minutes
-	*h = _bcd2dec (* (_buffer + 2) & 0b00111111); // get hours
-	_dow = _bcd2dec (* (_buffer + 3) % 0b00000111); // get the stored day of week
-	*dy = _bcd2dec (* (_buffer + 4) & 0b00111111); // get the date
-	*mn = _bcd2dec (* (_buffer + 5) & 0b00011111); // get the month
-	*yr = _bcd2dec (* (_buffer + 6)) + ( (* (_buffer + 5) & 0x80) ? 2000 : 1900); // year + century
+	*s = _bcd2dec (*(_buffer + 0) & 0b01111111); // get seconds
+	*m = _bcd2dec (*(_buffer + 1) & 0b01111111); // get minutes
+	*h = _bcd2dec (*(_buffer + 2) & 0b00111111); // get hours
+	_dow = _bcd2dec (*(_buffer + 3) % 0b00000111); // get the stored day of week
+	*dy = _bcd2dec (*(_buffer + 4) & 0b00111111); // get the date
+	*mn = _bcd2dec (*(_buffer + 5) & 0b00011111); // get the month
+	*yr = _bcd2dec (*(_buffer + 6)) + ((*(_buffer + 5) & 0x80) ? 2000 : 1900); // year + century
 	return _dow; // return day of week _from RTC_
 }
 
@@ -98,19 +100,19 @@ uint8_t DS3234::setTime (uint8_t h, uint8_t m, uint8_t s, uint8_t mn, uint8_t dy
 // register 0x0F, bit 7) to indicate that the time is valid.
 uint8_t DS3234::writeTime (uint8_t h, uint8_t m, uint8_t s, uint8_t mn, uint8_t dy, uint16_t yr)
 {
-	* (_buffer + 0) = _dec2bcd (s) & 0b01111111; // seconds
-	* (_buffer + 1) = _dec2bcd (m) & 0b01111111; // minutes
-	* (_buffer + 2) = _dec2bcd (h) & 0b00111111; // hours
-	* (_buffer + 3) = _get_dow (mn, dy, yr); // calculate day of week
-	* (_buffer + 4) = _dec2bcd (dy) & 0b00111111; // the date
-	* (_buffer + 5) = ( (_dec2bcd (mn) & 0b00011111) | (yr < 2000 ? 0x00 : 0x80)); // month and century bit
-	* (_buffer + 6) = _dec2bcd (yr % 100); // year
+	*(_buffer + 0) = _dec2bcd (s) & 0b01111111; // seconds
+	*(_buffer + 1) = _dec2bcd (m) & 0b01111111; // minutes
+	*(_buffer + 2) = _dec2bcd (h) & 0b00111111; // hours
+	*(_buffer + 3) = _get_dow (mn, dy, yr); // calculate day of week
+	*(_buffer + 4) = _dec2bcd (dy) & 0b00111111; // the date
+	*(_buffer + 5) = ((_dec2bcd (mn) & 0b00011111) | (yr < 2000 ? 0x00 : 0x80)); // month and century bit
+	*(_buffer + 6) = _dec2bcd (yr % 100); // year
 	_write_raw (); // send it to the RTC
 
 	// clear OSF when clock is set
 	clrOSF ();
 
-	return * (_buffer + 3); // return day of week(calculated by Zeller)
+	return *(_buffer + 3); // return day of week(calculated by Zeller)
 }
 
 // read chip temperature in degrees C (0.25 degrees per bit resolution)
@@ -128,7 +130,7 @@ float DS3234::readTempC (void)
 // just convert C to F
 float DS3234::readTempF (void)
 {
-	return ( (readTempC () * 1.8) + 32.0);
+	return ((readTempC () * 1.8) + 32.0);
 }
 
 // read one byte from battery backed SRAM
@@ -215,12 +217,15 @@ void DS3234::writeLongDouble (uint8_t address, long double value)
 // read from RTC BSRAM any data type
 template <class T> T DS3234::_readAll (uint8_t address, T &value)
 {
-	uint8_t x = sizeof (value);
-	uint8_t *ptr = (uint8_t *) (void *) &value;
+	uint8_t x;
+	uint8_t *ptr;
+
+	x = sizeof (value);
+	ptr = (uint8_t *) (void *) &value;
 
 	while (x--) {
-		_command (0x98, address + x);
-		* (ptr + x) = _command (0x19, 0x00);
+		_command (0x98, (address * sizeof (value)) + x);
+		*(ptr + x) = _command (0x19, 0x00);
 	}
 
 	return value;
@@ -229,12 +234,15 @@ template <class T> T DS3234::_readAll (uint8_t address, T &value)
 // write to RTC BSRAM any data type
 template <class T> void DS3234::_writeAll (uint8_t address, const T &value)
 {
-	uint8_t x = sizeof (value);
-	uint8_t *ptr = (uint8_t *) (void *) &value;
+	uint8_t x;
+	uint8_t *ptr;
+
+	x = sizeof (value);
+	ptr = (uint8_t *) (void *) &value;
 
 	while (x--) {
-		_command (0x98, address + x);
-		_command (0x99, * (ptr + x));
+		_command (0x98, (address * sizeof (value)) + x);
+		_command (0x99, *(ptr + x));
 	}
 }
 
@@ -244,7 +252,7 @@ void DS3234::_read_raw (void)
 	uint8_t x = 7;
 
 	while (x--) {
-		* (_buffer + x) = _command ( (0x00 + x), 0x00);
+		*(_buffer + x) = _command ((0x00 + x), 0x00);
 	}
 }
 
@@ -254,7 +262,7 @@ void DS3234::_write_raw (void)
 	uint8_t x = 7;
 
 	while (x--) {
-		_command ( (0x80 + x), * (_buffer + x));
+		_command ((0x80 + x), *(_buffer + x));
 	}
 }
 
@@ -276,7 +284,7 @@ uint8_t DS3234::_get_dow (uint8_t mn, uint8_t dy, uint16_t yr)
 		yr -= 1;
 	}
 
-	return ( ( (dy+ ( ( (mn+1) *26) /10) +yr+ (yr/4) + (6* (yr/100)) + (yr/400))-1) %7);
+	return (((dy + (((mn + 1) * 26) / 10) + yr + (yr / 4) + (6 * (yr / 100)) + (yr / 400)) - 1) % 7);
 }
 
 // convert decimal to BCD
@@ -294,7 +302,7 @@ uint8_t DS3234::_bcd2dec (uint8_t bcd)
 // wait until status bit 2 (BSY) goes low
 void DS3234::_busy_wait (void)
 {
-	while (_command (0x0F, 0x00) & 0b00000100) { ; }
+	while (_command (0x0F, 0x00) & 0b00000100);
 }
 
 // send command and send or receive data via SPI
@@ -310,7 +318,9 @@ uint8_t DS3234::_command (uint8_t cmd, uint8_t data)
 // transfer one byte via SPI Mode 3
 uint8_t DS3234::_spi_transfer (uint8_t data)
 {
-	uint8_t bits = 8;
+	uint8_t bits;
+
+	bits = 8;
 
 	while (bits--) {
 		digitalWrite (_sck_pin, LOW);
