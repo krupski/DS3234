@@ -352,3 +352,4 @@ uint8_t DS3234::_spi_transfer (uint8_t data)
 DS3234 RTC; // Preinstantiate real time clock object
 
 // end of DS3234.cpp
+
