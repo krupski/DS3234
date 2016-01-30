@@ -3,7 +3,7 @@
 //  Dallas / Maxim DS3234 RTC Driver Library for Arduino
 //  Copyright (c) 2012, 2015 Roger A. Krupski <rakrupski@verizon.net>
 //
-//  Last update: 11 July 2015
+//  Last update: 07 September 2015
 //
 //  This program is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU General Public License as published by
@@ -29,20 +29,34 @@
 #include "Arduino.h"
 #endif
 
-#define BSY     _BV(2) // device busy bit
+// control register 0x0E/0x8E
+#define A1IE    _BV(0) // alarm 1 interrupt enable
+#define A2IE    _BV(1) // alarm 2 interrupt enable
+#define INTCN   _BV(2) // interrupt control
+#define RS1     _BV(3) // square wave rate select 1
+#define RS2     _BV(4) // square wave rate select 2
 #define CONV    _BV(5) // force temperature conversion bit
 #define BBSQW   _BV(6) // enable battery backed swuare wave output
 #define EOSC    _BV(7) // enable oscillator (active low)
-#define OSF     _BV(7) // "has oscillator been stopped?" flag
-#define CENTURY _BV(7) // century flag (0=1900, 1=2000)
 
-#define SEC_REG 0 // some register addresses
-#define MIN_REG 1 // (although not all of them)
-#define HRS_REG 2
-#define DOW_REG 3
-#define DAY_REG 4
-#define MON_REG 5
-#define YRS_REG 6
+// control/status register 0x0F/0x8F
+#define A1F     _BV(0) // alarm 1 flag
+#define A2F     _BV(1) // alarm 2 flag
+#define BSY     _BV(2) // device busy bit
+#define EN32KHZ _BV(3) // enable 32 khz output
+#define CRATE0  _BV(4) // temperature conversion rate 0
+#define CRATE1  _BV(5) // temperature conversion rate 1
+#define BB32KHZ _BV(6) // enable battery backed 32 khz output
+#define OSF     _BV(7) // "oscillator been stopped" flag
+
+#define CENTURY _BV(7) // century flag (0=1900, 1=2000)
+#define SEC_REG     0 // some register addresses
+#define MIN_REG     1 // (although not all of them)
+#define HRS_REG     2
+#define DOW_REG     3
+#define DAY_REG     4
+#define MON_REG     5
+#define YRS_REG     6
 
 #define SEC_MASK 0b01111111 // mask off other data in...
 #define MIN_MASK 0b01111111 // ... the time registers
@@ -53,55 +67,66 @@
 
 class DS3234
 {
-	public:
-		uint8_t init (uint8_t, uint8_t, uint8_t, uint8_t); // setup the IO pins & return RTC status
-		uint8_t getTime (uint8_t &, uint8_t &, uint8_t &, uint8_t &, uint8_t &, uint16_t &); // get time
-		uint8_t setTime (uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, uint16_t); // set time & clear OSF flag
-		float getTempC (void); // read the temperature sensor in deg C.
-		float getTempF (void); // read the temperature sensor & convert to deg F.
-		uint8_t read (uint8_t); // 8 bits (same as readByte)
-		uint8_t readByte (uint8_t); // 8 bits
-		uint16_t readWord (uint8_t); // 16 bits
-		uint32_t readDWord (uint8_t); // 32 bits
-		uint64_t readQWord (uint8_t); // 64 bits
-		float readFloat (uint8_t); // 32 bits
-		double readDouble (uint8_t); // (now 32 bits, someday 64)
-		long double readLongDouble (uint8_t); // (now 32 bits, someday 128)
-		void write (uint8_t, uint8_t); // 8 bits (same as writeByte)
-		void writeByte (uint8_t, uint8_t); // 8 bits
-		void writeWord (uint8_t, uint16_t); // 16 bits
-		void writeDWord (uint8_t, uint32_t); // 32 bits
-		void writeQWord (uint8_t, uint64_t); // 64 bits
-		void writeFloat (uint8_t, float); // 32 bits
-		void writeDouble (uint8_t, double); // (now 32 bits, someday 64)
-		void writeLongDouble (uint8_t, long double); // (now 32 bits, someday 128)
-	private:
-		char _buffer[7]; // clock I/O buffer
-		uint8_t _SCK_BIT; // spi bitmasks
-		uint8_t _MISO_BIT;
-		uint8_t _MOSI_BIT;
-		uint8_t _CS_BIT;
-		volatile uint8_t *_SCK_PORT; // spi ports
-		volatile uint8_t *_MISO_PORT;
-		volatile uint8_t *_MISO_PIN;
-		volatile uint8_t *_MOSI_PORT;
-		volatile uint8_t *_CS_PORT;
-		uint8_t _dw; // day of the week 0=Sun, 1=Mon...6=Sat
-		template <class T> T _readAll (uint8_t, T &); // generic SRAM read template
-		template <class T> void _writeAll (uint8_t, const T &); // generic SRAM write template
-		uint8_t _get_dow (uint8_t, uint8_t, uint16_t); // get day of week using Zeller's congruence
-		uint8_t _dec2bcd (uint8_t); // convert decimal -> BCD
-		uint8_t _bcd2dec (uint8_t); // convert BCD -> decimal
-		void _set_bit (uint8_t, uint8_t);
-		void _clr_bit (uint8_t, uint8_t);
-		void _read_time (void); // read 7 data bytes from clock
-		void _write_time (void); // write 7 data bytes to clock
-		void _busy_wait (uint32_t); // wait while chip is busy
-		uint8_t _command (uint8_t, uint8_t); // send a command byte to the clock
-		uint8_t _spi_transfer (uint8_t); // send or receive data SPI Mode 3
+public:
+	uint8_t init (uint8_t, uint8_t, uint8_t, uint8_t); // setup the IO pins & return RTC status
+	uint8_t getTime (uint8_t &, uint8_t &, uint8_t &, uint8_t &, uint8_t &, uint16_t &); // get time
+	uint8_t setTime (uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, uint16_t); // set time & clear OSF flag
+	double getTempC (void); // read the temperature sensor in deg C.
+	double getTempF (void); // read the temperature sensor & convert to deg F.
+	uint8_t read (uint8_t); // 8 bits (same as readByte)
+	uint8_t readByte (uint8_t); // 8 bits
+	uint16_t readWord (uint8_t); // 16 bits
+	uint32_t readDWord (uint8_t); // 32 bits
+	uint64_t readQWord (uint8_t); // 64 bits
+	float readFloat (uint8_t); // 32 bits
+	double readDouble (uint8_t); // (now 32 bits, someday 64?)
+	long double readLongDouble (uint8_t); // (now 32 bits, someday 128?)
+	void write (uint8_t, uint8_t); // 8 bits (same as writeByte)
+	void writeByte (uint8_t, uint8_t); // 8 bits
+	void writeWord (uint8_t, uint16_t); // 16 bits
+	void writeDWord (uint8_t, uint32_t); // 32 bits
+	void writeQWord (uint8_t, uint64_t); // 64 bits
+	void writeFloat (uint8_t, float); // 32 bits
+	void writeDouble (uint8_t, double); // (now 32 bits, someday 64?)
+	void writeLongDouble (uint8_t, long double); // (now 32 bits, someday 128?)
+private:
+	// SPI bitmasks
+	uint8_t _SCK_BIT;
+	uint8_t _MISO_BIT;
+	uint8_t _MOSI_BIT;
+	uint8_t _CS_BIT;
+	// SPI outputs
+	volatile uint8_t *_SCK_PORT;
+	volatile uint8_t *_MISO_PORT;
+	volatile uint8_t *_MOSI_PORT;
+	volatile uint8_t *_CS_PORT;
+	// SPI inputs
+	volatile uint8_t *_SCK_PIN;
+	volatile uint8_t *_MISO_PIN;
+	volatile uint8_t *_MOSI_PIN;
+	volatile uint8_t *_CS_PIN;
+	// SPI DDR's
+	volatile uint8_t *_SCK_DDR;
+	volatile uint8_t *_MISO_DDR;
+	volatile uint8_t *_MOSI_DDR;
+	volatile uint8_t *_CS_DDR;
+	// RTC stuff
+	char _buffer[7]; // clock I/O buffer
+	uint8_t _dw; // day of the week 0=Sun, 1=Mon...6=Sat
+	template <class T> T _readAll (uint8_t, T &); // generic SRAM read template
+	template <class T> void _writeAll (uint8_t, const T &); // generic SRAM write template
+	uint8_t _get_dow (uint8_t, uint8_t, uint16_t); // get day of week using Zeller's congruence
+	uint8_t _dec2bcd (uint8_t); // convert decimal -> BCD
+	uint8_t _bcd2dec (uint8_t); // convert BCD -> decimal
+	void _set_rtc_bit (uint8_t, uint8_t); // set a bit in a clock register
+	void _clr_rtc_bit (uint8_t, uint8_t); // clear a bit in a clock register
+	void _read_time (void); // read 7 data bytes from clock
+	void _write_time (void); // write 7 data bytes to clock
+	uint8_t _command (uint8_t, uint8_t); // send a command byte to the clock
+	uint8_t _spi_transfer (uint8_t); // send or receive data SPI Mode 3
+	void _delay_usec (uint32_t); // microseconds delay without huge include
 };
 
 extern DS3234 RTC; // Preinstantiated real time clock object
 
 #endif
-
