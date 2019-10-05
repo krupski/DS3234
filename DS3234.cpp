@@ -1,9 +1,9 @@
 ///////////////////////////////////////////////////////////////////////////////
 //
 //  Dallas / Maxim DS3234 RTC Driver Library for Arduino
-//  Copyright (c) 2012, 2016 Roger A. Krupski <rakrupski@verizon.net>
+//  Copyright (c) 2012, 2018 Roger A. Krupski <rakrupski@verizon.net>
 //
-//  Last update: 13 August 2016
+//  Last update: 05 November 2018
 //
 //  This program is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU General Public License as published by
@@ -22,47 +22,116 @@
 
 #include <DS3234.h>
 
-DS3234::DS3234 (uint8_t sck, uint8_t miso, uint8_t mosi, uint8_t cs, uint8_t vcc, uint8_t gnd)
+DS3234::DS3234 (uint8_t sck, uint8_t miso, uint8_t mosi, uint8_t cs, uint8_t sqw)
 {
-	uint8_t x;
+	uint8_t n;
 
-	if (gnd != 99) {
-		x = digitalPinToPort (gnd); // pin -> port
-		_GND_PORT = portOutputRegister (x); // set gnd pin as output
-		_GND_DDR  = portModeRegister (x); // get gnd pin's DDR
-		_GND_BIT = digitalPinToBitMask (gnd); // get gnd pin's bitmask
-		*_GND_PORT &= ~_GND_BIT; // set gnd pin low
-		*_GND_DDR |= _GND_BIT; // set gnd pin DDR to output
+	// get ports, pins & ddr's
+	n = digitalPinToPort (sck);
+	_SCK_OUT = portOutputRegister (n);
+	_SCK_DDR = portModeRegister (n);
+
+	n = digitalPinToPort (miso);
+	_MISO_INP = portInputRegister (n);
+	_MISO_OUT = portOutputRegister (n);
+	_MISO_DDR = portModeRegister (n);
+
+	n = digitalPinToPort (mosi);
+	_MOSI_OUT = portOutputRegister (n);
+	_MOSI_DDR = portModeRegister (n);
+
+	n = digitalPinToPort (cs);
+	_CS_OUT = portOutputRegister (n);
+	_CS_DDR = portModeRegister (n);
+
+	// bitmasks
+	_SCK_BIT = digitalPinToBitMask (sck);
+	_MISO_BIT = digitalPinToBitMask (miso);
+	_MOSI_BIT = digitalPinToBitMask (mosi);
+	_CS_BIT = digitalPinToBitMask (cs);
+
+	// set initial pin values
+	*_SCK_OUT |= _SCK_BIT; // SCK idles high in mode 3
+	*_MISO_OUT |= _MISO_BIT; // set MISO to "input pullup" mode
+	*_MOSI_OUT |= _MOSI_BIT; // set MOSI initially high
+	*_CS_OUT |= _CS_BIT; // set SS high makes us the SPI master
+
+	// set DDR's to output (except MISO and SQW which are input)
+	*_SCK_DDR |= _SCK_BIT; // output
+	*_MISO_DDR &= ~_MISO_BIT; // input
+	*_MOSI_DDR |= _MOSI_BIT; // output
+	*_CS_DDR |= _CS_BIT; // output
+
+	if (sqw != 255) { // optional square wave / alarm interrupt pin
+		n = digitalPinToPort (sqw);
+		_SQW_INP = portInputRegister (n);
+		_SQW_OUT = portOutputRegister (n);
+		_SQW_DDR = portModeRegister (n);
+		_SQW_BIT = digitalPinToBitMask (sqw);
+		*_SQW_DDR &= ~_SQW_BIT; // input
+		*_SQW_OUT |= _SQW_BIT; // enable pullup
 	}
+}
 
-	if (vcc != 99) {
-		x = digitalPinToPort (vcc); // pin -> port
-		_VCC_PORT  = portOutputRegister (x); // set vcc pin as output
-		_VCC_DDR   = portModeRegister (x); // get vcc pin's DDR
-		_VCC_BIT  = digitalPinToBitMask (vcc); // get vcc pin's bitmask
-		*_VCC_PORT |= _VCC_BIT; // set vcc pin high
-		*_VCC_DDR |= _VCC_BIT; // set vcc pin DDR to output
-		__builtin_avr_delay_cycles ((F_CPU / 1e3) * 100); // let chip settle
-	}
+uint8_t DS3234::begin (void)
+{
+	uint8_t dow, mon, day;
+	uint16_t year;
 
-	status = _init (sck, miso, mosi, cs); // init rtc chip and set RTC status
+	// setup control register bits (0x0E/0x8E)
+	_clr_rtc_bit (CTRL, EOSC); // enable the oscillator
+	__builtin_avr_delay_cycles (F_CPU / (MSEC / 250)); // let oscillator stabilize
+	_set_rtc_bit (CTRL, BBSQW); // enable the square wave output
+	_clr_rtc_bit (CTRL, RS1); // set squarewave...
+	_clr_rtc_bit (CTRL, RS2); // ...rate to 1 Hz.
+	_clr_rtc_bit (CTRL, INTCN); // direct square wave to SQW pin
+
+	// check "oscillator has been stopped" flag
+	status = ((_command ((STAT | RD), 0) & OSF) ? 1 : 0);
+	_read_time(); // read RTC into buffer as BCD
+
+	// check if stored DOW matched calculated DOW
+	dow = _bcd2dec (_clockBuf[DOW] % DOW_MASK); // dow = stored day of week
+	day = _bcd2dec (_clockBuf[DAY] & DAY_MASK);
+	mon = _bcd2dec (_clockBuf[MON] & MON_MASK);
+	year = ((_clockBuf[MON] & CENTBIT) ? 2000 : 1900);
+	year += _bcd2dec (_clockBuf[YEAR]);
+
+	status += (dow == _get_dow (day, mon, year)) ? 0 : 2; // compare stored to calculated
+
+	return status;
 }
 
 // get the time, converted from BCD to decimal
 // return day of week from chip (not from Zeller)
-uint8_t DS3234::getTime (uint8_t &hrs, uint8_t &min, uint8_t &sec, uint8_t &mon, uint8_t &day, uint16_t &yrs)
+uint8_t DS3234::getTime (int &sec, int &min, int &hrs, int &day, int &mon, int &yrs)
 {
-	_read_time(); // read RTC into buffer
-	sec = _bcd2dec (*(_buffer + SEC) & SEC_MASK); // seconds
-	min = _bcd2dec (*(_buffer + MIN) & MIN_MASK); // minutes
-	hrs = _bcd2dec (*(_buffer + HRS) & HRS_MASK); // hours
-	dow = _bcd2dec (*(_buffer + DOW) % DOW_MASK); // STORED day of week
-	day = _bcd2dec (*(_buffer + DAY) & DAY_MASK); // date
-	mon = _bcd2dec (*(_buffer + MON) & MON_MASK); // month
-	yrs = _bcd2dec (*(_buffer + YEAR)) + ((*(_buffer + MON) & CENTBIT) ? 2000 : 1900); // year+century
-	// Compare DOW stored in RTC to Zeller calculated DOW.
-	// If mismatch, return 0xFF, if OK return DOW (as stored in the RTC)
-	return (dow == _get_dow (mon, day, yrs)) ? dow : 0xFF;
+	return getTime (
+		(uint8_t &)(sec),
+		(uint8_t &)(min),
+		(uint8_t &)(hrs),
+		(uint8_t &)(day),
+		(uint8_t &)(mon),
+		(uint16_t &)(yrs)
+	);
+}
+
+uint8_t DS3234::getTime (uint8_t &sec, uint8_t &min, uint8_t &hrs, uint8_t &day, uint8_t &mon, uint16_t &yrs)
+{
+	uint8_t dow;
+
+	_read_time(); // read RTC into buffer as BCD
+
+	sec = _bcd2dec (_clockBuf[SEC] & SEC_MASK);
+	min = _bcd2dec (_clockBuf[MIN] & MIN_MASK);
+	hrs = _bcd2dec (_clockBuf[HRS] & HRS_MASK);
+	dow = _bcd2dec (_clockBuf[DOW] % DOW_MASK);
+	day = _bcd2dec (_clockBuf[DAY] & DAY_MASK);
+	mon = _bcd2dec (_clockBuf[MON] & MON_MASK);
+	yrs = ((_clockBuf[MON] & CENTBIT) ? 2000 : 1900);
+	yrs += _bcd2dec (_clockBuf[YEAR]);
+
+	return dow;
 }
 
 // Set the time - decimal is converted to bcd for the clock chip.
@@ -70,220 +139,147 @@ uint8_t DS3234::getTime (uint8_t &hrs, uint8_t &min, uint8_t &sec, uint8_t &mon,
 // Day of week is automatically calculated with Zeller's congruence.
 // Setting the time also clears the Oscillator Stop Flag (status
 // register 0x0F, bit 7) to indicate that the time is valid.
-// Time is invalid if the battery is removed
-// Note: Not all vars need to be specified. Hours, Mins and Secs ARE required.
-uint8_t DS3234::setTime (uint8_t hrs, uint8_t min, uint8_t sec, uint8_t mon, uint8_t day, uint16_t yrs)
+// Time becomes invalid if the battery is removed or dies.
+uint8_t DS3234::setTime (int sec, int min, int hrs, int day, int mon, int yrs)
 {
-	_read_time(); // read RTC into buffer
-	*(_buffer + HRS) = (_dec2bcd (hrs) & HRS_MASK); // set hours
-	*(_buffer + MIN) = (_dec2bcd (min) & MIN_MASK); // set minutes
-	*(_buffer + SEC) = (_dec2bcd (sec) & SEC_MASK); // set seconds
-	if (mon && day && yrs) { *(_buffer + DOW) = (_get_dow (mon, day, yrs)); } // calculate day of week
-	if (mon && yrs) { *(_buffer + MON) = (_dec2bcd (mon) & MON_MASK) | (yrs < 2000 ? 0 : CENTBIT); } // set the month and century bit
-	if (day) { *(_buffer + DAY) = (_dec2bcd (day) & DAY_MASK); } // set the date
-	if (yrs) { *(_buffer + YEAR) = (_dec2bcd (yrs % 100)); }  // set the year
-	_write_time(); // update the RTC
-	clearOSF(); // clear the "Oscillator has been stopped" flag bit
-	return *(_buffer + DOW); // return day of week (as calculated by Zeller]
+	return setTime (
+		(uint8_t)(sec),
+		(uint8_t)(min),
+		(uint8_t)(hrs),
+		(uint8_t)(day),
+		(uint8_t)(mon),
+		(uint16_t)(yrs)
+	);
 }
 
-// clear the "Oscillator has been stopped" flag bit
-uint8_t DS3234::clearOSF (void)
+uint8_t DS3234::setTime (uint8_t sec, uint8_t min, uint8_t hrs, uint8_t day, uint8_t mon, uint16_t yrs)
 {
-	_read_time(); // read RTC into buffer
-	_clr_rtc_bit (STAT, OSF); // clear "oscillator stopped" flag
-	_write_time(); // send it to the RTC
-	_read_time(); // read RTC into buffer
-	return ((_command ((STAT | RD), 0) & OSF) ? 1 : 0); // return actual OSF
+	uint8_t dow = _get_dow (day, mon, yrs); // calculate day of week with Zeller
+	uint8_t cent = ((yrs < 2000) ? 0 : CENTBIT); // calculate century bit
+
+	_clockBuf[SEC]  = _dec2bcd (sec); // decimal to BCD seconds
+	_clockBuf[MIN]  = _dec2bcd (min); // decimal to BCD minutes
+	_clockBuf[HRS]  = _dec2bcd (hrs); // decimal to BCD hours
+	_clockBuf[DOW]  = _dec2bcd (dow); // decimal to BCD day of the week
+	_clockBuf[DAY]  = _dec2bcd (day); // decimal to BCD day of the month
+	_clockBuf[MON]  = _dec2bcd (mon) | cent; // decimal to BCD month and century bit
+	_clockBuf[YEAR] = _dec2bcd (yrs - (cent ? 2000 : 1900)); // decimal to BCD year (2 digit)
+
+	_write_time(); // update the RTC time
+
+	_clearOSF(); // clear the "Oscillator has been stopped" flag bit
+
+	return dow;
 }
 
 // read chip temperature in degrees C (0.25 degrees per bit resolution)
 double DS3234::getTempC (void)
 {
-	uint8_t timeout;
-	timeout = 200; // prevent lockup if chip fails
-
+	uint8_t timeout = 200; // prevent lockup if chip fails
 	while ((_command ((STAT | RD), 0) & BSY) && timeout--); // wait for not busy
-
 	_set_rtc_bit (CTRL, CONV); // force a temperature conversion
+	__builtin_avr_delay_cycles (F_CPU / (MSEC / 5)); // wait for BSY to become valid
 	timeout = 200; // prevent lockup if chip fails
-
 	while ((_command ((CTRL | RD), 0) & (CONV | BSY)) && timeout--); // wait for conversion complete
-
-	return (double) (((_command ((TMSB | RD), 0) << 8 | _command ((TLSB | RD), 0)) >> 6) / 4.0);
+	return (double)(((_command ((TMSB | RD), 0) << 8 | _command ((TLSB | RD), 0)) >> 6) / 4.0);
 }
 
 // just convert C to F
 double DS3234::getTempF (void)
 {
-	return ((getTempC () * 1.8) + 32.0);
+	return ((getTempC() * 1.8) + 32.0);
 }
 
-// read one byte from battery backed SRAM
-uint8_t DS3234::read (uint8_t address)
-{
-	return readByte (address);
-}
-
-// read one byte from battery backed SRAM
-uint8_t DS3234::readByte (uint8_t address)
+uint8_t DS3234::readByte (uint8_t addr)
 {
 	uint8_t value;
-	return _readAll (address, value);
+	return _readAll (addr, value);
 }
 
-uint16_t DS3234::readWord (uint8_t address)
+uint16_t DS3234::readWord (uint8_t addr)
 {
 	uint16_t value;
-	return _readAll (address, value);
+	return _readAll (addr, value);
 }
 
-uint32_t DS3234::readDWord (uint8_t address)
+uint32_t DS3234::readDWord (uint8_t addr)
 {
 	uint32_t value;
-	return _readAll (address, value);
+	return _readAll (addr, value);
 }
 
-uint64_t DS3234::readQWord (uint8_t address)
+uint64_t DS3234::readQWord (uint8_t addr)
 {
 	uint64_t value;
-	return _readAll (address, value);
+	return _readAll (addr, value);
 }
 
-// float, double and long double are all the
-// same in Arduino, but we look to the future...
-float DS3234::readFloat (uint8_t address)
+float DS3234::readFloat (uint8_t addr)
 {
 	float value;
-	return _readAll (address, value);
+	return _readAll (addr, value);
 }
 
-double DS3234::readDouble (uint8_t address)
+double DS3234::readDouble (uint8_t addr)
 {
 	double value;
-	return _readAll (address, value);
+	return _readAll (addr, value);
 }
 
-long double DS3234::readLongDouble (uint8_t address)
+long double DS3234::readLongDouble (uint8_t addr)
 {
 	long double value;
-	return _readAll (address, value);
+	return _readAll (addr, value);
 }
 
-// write one byte to battery backed SRAM
-void DS3234::write (uint8_t address, uint8_t value)
+void DS3234::writeByte (uint8_t addr, uint8_t value)
 {
-	writeByte (address, value);
+	_writeAll (addr, value);
 }
 
-// write one byte to battery backed SRAM
-void DS3234::writeByte (uint8_t address, uint8_t value)
+void DS3234::writeWord (uint8_t addr, uint16_t value)
 {
-	_writeAll (address, value);
+	_writeAll (addr, value);
 }
 
-void DS3234::writeWord (uint8_t address, uint16_t value)
+void DS3234::writeDWord (uint8_t addr, uint32_t value)
 {
-	_writeAll (address, value);
+	_writeAll (addr, value);
 }
 
-void DS3234::writeDWord (uint8_t address, uint32_t value)
+void DS3234::writeQWord (uint8_t addr, uint64_t value)
 {
-	_writeAll (address, value);
+	_writeAll (addr, value);
 }
 
-void DS3234::writeQWord (uint8_t address, uint64_t value)
+void DS3234::writeFloat (uint8_t addr, float value)
 {
-	_writeAll (address, value);
+	_writeAll (addr, value);
 }
 
-void DS3234::writeFloat (uint8_t address, float value)
+void DS3234::writeDouble (uint8_t addr, double value)
 {
-	_writeAll (address, value);
+	_writeAll (addr, value);
 }
 
-void DS3234::writeDouble (uint8_t address, double value)
+void DS3234::writeLongDouble (uint8_t addr, long double value)
 {
-	_writeAll (address, value);
-}
-
-void DS3234::writeLongDouble (uint8_t address, long double value)
-{
-	_writeAll (address, value);
+	_writeAll (addr, value);
 }
 
 ///////////////////////////////////////////////////////////////////
 /////////////////// private functions begin here //////////////////
 ///////////////////////////////////////////////////////////////////
-
-// initialize the SPI interface & setup RTC.
-uint8_t DS3234::_init (uint8_t sck, uint8_t miso, uint8_t mosi, uint8_t cs)
+// clear the "Oscillator has been stopped" flag bit
+void DS3234::_clearOSF (void)
 {
-	uint8_t x;
-
-	// get ports, pins & ddr's
-	x = digitalPinToPort (sck);
-	_SCK_PORT  = portOutputRegister (x);
-	_SCK_DDR   = portModeRegister (x); // output pin
-
-	x = digitalPinToPort (miso);
-	_MISO_PIN  = portInputRegister (x);
-	_MISO_DDR  = portModeRegister (x); // input pin
-
-	x = digitalPinToPort (mosi);
-	_MOSI_PORT = portOutputRegister (x); // output pin
-	_MOSI_DDR  = portModeRegister (x);
-
-	x = digitalPinToPort (cs);
-	_CS_PORT   = portOutputRegister (x); // output pin
-	_CS_DDR    = portModeRegister (x);
-
-	// get SPI bitmasks
-	_SCK_BIT  = digitalPinToBitMask (sck);
-	_MISO_BIT = digitalPinToBitMask (miso);
-	_MOSI_BIT = digitalPinToBitMask (mosi);
-	_CS_BIT   = digitalPinToBitMask (cs);
-
-	// set initial SPI pin values
-	*_SCK_PORT  |= _SCK_BIT;  // SCK idles high in mode 3
-	*_MISO_PORT |= _MISO_BIT; // set MISO to "input pullup" mode
-	*_MOSI_PORT |= _MOSI_BIT; // set MOSI initially high
-	*_CS_PORT   |= _CS_BIT;   // set SS high makes us the SPI master
-
-	// set SPI DDR's to output (except MISO which is input)
-	*_SCK_DDR  |= _SCK_BIT;   // output
-	*_MISO_DDR &= ~_MISO_BIT; // input
-	*_MOSI_DDR |= _MOSI_BIT;  // output
-	*_CS_DDR   |= _CS_BIT;    // output
-
-	// setup initial clock control register bits
-	_clr_rtc_bit (STAT, CRATE0);  // set temperature conversion...
-	_clr_rtc_bit (STAT, CRATE1);  // ...rate to 64 seconds
-	_clr_rtc_bit (CTRL, INTCN); // direct square wave to pin
-	_clr_rtc_bit (CTRL, RS1);   // set squarewave...
-	_clr_rtc_bit (CTRL, RS2);   // ...rate to 1 Hz.
-	_set_rtc_bit (CTRL, BBSQW); // enable the square wave output
-	_clr_rtc_bit (CTRL, EOSC);  // enable the oscillator
-
-	__builtin_avr_delay_cycles ((F_CPU / 1e3) * 100); // let chip settle
-
-	// check "oscillator has been stopped" flag
-	x = ((_command ((STAT | RD), 0) & OSF) ? 1 : 0);
-
-	x += ((getTime (
-		(uint8_t &) *(_buffer + SEC), // borrow clock buffer...
-		(uint8_t &) *(_buffer + MIN), // ...as dummy time vars
-		(uint8_t &) *(_buffer + HRS), // clever, huh?  ;)
-		(uint8_t &) *(_buffer + DOW),
-		(uint8_t &) *(_buffer + DAY),
-		(uint16_t &) *(_buffer + MON)
-	) == 0xFF) ? 2 : 0);
-
-	return x; // return RTC status
+	_read_time(); // read RTC into buffer
+	_clr_rtc_bit (STAT, OSF); // clear "oscillator stopped" flag
+	_write_time(); // send it to the RTC
 }
 
 // read from RTC BSRAM any data type
-template <class T> T DS3234::_readAll (uint8_t address, T &value)
+template <class T> T DS3234::_readAll (uint8_t address, const T &value)
 {
 	uint8_t x = sizeof (value);
 	uint8_t *ptr = (uint8_t *) (void *) &value;
@@ -297,29 +293,29 @@ template <class T> T DS3234::_readAll (uint8_t address, T &value)
 }
 
 // write to RTC BSRAM any data type
-template <class T> void DS3234::_writeAll (uint8_t address, const T &value)
+template <class T> void DS3234::_writeAll (uint8_t addr, const T &value)
 {
 	uint8_t x = sizeof (value);
 	uint8_t *ptr = (uint8_t *) (void *) &value;
 
 	while (x--) {
-		_command ((RADR | WR), address + x);
+		_command ((RADR | WR), addr + x);
 		_command ((RDAT | WR), *(ptr + x));
 	}
 }
 
 //////////////////////////////////////////////////////////////////////////
-// zeller's congruence (calculates day of week) modified so that
-// sunday == 0, monday == 1 .... friday == 5, saturday == 6
+// zeller's congruence (calculates day of week) modified
+// so that sunday=0, monday=1 ... friday=5, saturday=6
 // reference: http://en.wikipedia.org/wiki/Zeller's_congruence
 //////////////////////////////////////////////////////////////////////////
 //
-//      |     |(m + 1) * 26|       | y |       | y |   | y |     |
-//  h = | q + |------------| + y + |---| + 6 * |---| + |---| - 1 | mod 7
-//      |     |     10     |       | 4 |       |100|   |400|     |
+// | |(m + 1) * 26| | y | | y | | y | |
+// h = | q + |------------| + y + |---| + 6 * |---| + |---| - 1 | % 7
+// | | 10 | | 4 | |100| |400| |
 //
 //////////////////////////////////////////////////////////////////////////
-uint8_t DS3234::_get_dow (uint8_t m, uint8_t d, uint16_t y)
+uint8_t DS3234::_get_dow (uint8_t d, uint8_t m, uint16_t y)
 {
 	if (m < 3) { // convert months to 2...14
 		m += 12;
@@ -361,40 +357,43 @@ void DS3234::_clr_rtc_bit (uint8_t reg, uint8_t value)
 // see: http://forum.arduino.cc/index.php?topic=123501.msg2305653#msg2305653
 // re: _read_time() and _write_time()
 ////////////////////////////////////////////////////////////////////////////////
-
 // read 7 bytes of raw clock data to buffer
 void DS3234::_read_time (void)
 {
-	uint8_t x;
+	uint8_t n;
 
-	*_CS_PORT &= ~_CS_BIT; // assert cs
+	*_CS_OUT &= ~_CS_BIT; // assert cs
 	_spi_transfer (RD); // send read command
-	for (x = 0; x < 7; x++) {
-		_buffer[x] = _spi_transfer (x); // read 7 bytes in sequence
+
+	for (n = 0; n < 7; n++) {
+		_clockBuf[n] = _spi_transfer (0); // read 7 bytes in sequence
 	}
-	*_CS_PORT |= _CS_BIT; // release cs
+
+	*_CS_OUT |= _CS_BIT; // release cs
 }
 
 // write 7 bytes of raw clock data from buffer
 void DS3234::_write_time (void)
 {
-	uint8_t x;
+	uint8_t n;
 
-	*_CS_PORT &= ~_CS_BIT; // assert cs
+	*_CS_OUT &= ~_CS_BIT; // assert cs
 	_spi_transfer (WR); // send write command
-	for (x = 0; x < 7; x++) {
-		_spi_transfer (_buffer[x]); // write 7 bytes in sequence
+
+	for (n = 0; n < 7; n++) {
+		_spi_transfer (_clockBuf[n]); // write 7 bytes in sequence
 	}
-	*_CS_PORT |= _CS_BIT; // release cs
+
+	*_CS_OUT |= _CS_BIT; // release cs
 }
 
 // send or receive data via SPI
 uint8_t DS3234::_command (uint8_t cmd, uint8_t data)
 {
-	*_CS_PORT &= ~_CS_BIT; // assert cs
+	*_CS_OUT &= ~_CS_BIT; // assert cs
 	_spi_transfer (cmd);
 	data = _spi_transfer (data);
-	*_CS_PORT |= _CS_BIT; // release cs
+	*_CS_OUT |= _CS_BIT; // release cs
 	return data;
 }
 
@@ -402,14 +401,16 @@ uint8_t DS3234::_command (uint8_t cmd, uint8_t data)
 uint8_t DS3234::_spi_transfer (uint8_t data)
 {
 	uint8_t bits = 8;
+
 	while (bits--) {
-		*_SCK_PORT &= ~_SCK_BIT; // sck low
-		data & _BV(bits) ? *_MOSI_PORT |= _MOSI_BIT : *_MOSI_PORT &= ~_MOSI_BIT;  // send bit
-		*_SCK_PORT |= _SCK_BIT; // sck high
-		*_MISO_PIN & _MISO_BIT ? data |= _BV(bits) : data &= ~_BV(bits);  // receive bit
+		*_SCK_OUT &= ~_SCK_BIT; // sck low
+		data & (1 << bits) ? *_MOSI_OUT |= _MOSI_BIT : *_MOSI_OUT &= ~_MOSI_BIT; // send bit
+		*_SCK_OUT |= _SCK_BIT; // sck high
+		*_MISO_INP & _MISO_BIT ? data |= (1 << bits) : data &= ~ (1 << bits); // receive bit
 	}
 
-	return data & 0xFF;
+	return data;
 }
 
 // end of DS3234.cpp
+
